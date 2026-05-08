@@ -1,0 +1,8 @@
+﻿Analyzing riwayat_match_screen.dart, rule_engine_screen.dart, laporan_screen.dart...
+
+  error - lib\screens\rule_engine_screen.dart:194:53 - The getter 'textPrimary12' isn't defined for the type 'BuildContext'. Try importing the library that defines 'textPrimary12', correcting the name to the name of an existing getter, or defining a getter or field named 'textPrimary12'. - undefined_getter
+   info - lib\screens\riwayat_match_screen.dart:567:3 - Constructors in '@immutable' classes should be declared as 'const'. Try adding 'const' to the constructor declaration. - prefer_const_constructors_in_immutables
+   info - lib\screens\rule_engine_screen.dart:2:8 - The import of '../theme/app_theme.dart' is unnecessary because all of the used elements are also provided by the import of '../main.dart'. Try removing the import directive. - unnecessary_import
+   info - lib\screens\rule_engine_screen.dart:686:17 - 'activeColor' is deprecated and shouldn't be used. Use activeThumbColor instead. This feature was deprecated after v3.31.0-2.0.pre. Try replacing the use of the deprecated member with the replacement. - deprecated_member_use
+
+4 issues found.
