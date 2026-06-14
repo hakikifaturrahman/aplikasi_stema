@@ -46,6 +46,40 @@ function loadDB() {
 
       // Memastikan struktur data accountsData ada
       if (!data.accountsData) data.accountsData = [];
+
+      // Menyinkronkan akun, pemain, dan aturan bawaan dari repository jika belum ada di volume eksternal
+      if (dbPath !== defaultDbPath && fs.existsSync(defaultDbPath)) {
+        try {
+          const defaultRaw = fs.readFileSync(defaultDbPath, 'utf8');
+          const defaultData = JSON.parse(defaultRaw);
+
+          if (defaultData.accountsData && Array.isArray(defaultData.accountsData)) {
+            defaultData.accountsData.forEach(acc => {
+              const exists = data.accountsData.some(u => u.email === acc.email);
+              if (!exists) {
+                console.log(`👤 Menyalin akun dari repository ke volume: ${acc.email}`);
+                data.accountsData.push(acc);
+              }
+            });
+          }
+
+          if (defaultData.playersData && Array.isArray(defaultData.playersData)) {
+            if (!data.playersData || data.playersData.length <= 8) {
+              console.log('🏃 Menyalin data pemain dari repository ke volume...');
+              data.playersData = defaultData.playersData;
+            }
+          }
+
+          if (defaultData.rulesData && Array.isArray(defaultData.rulesData)) {
+            if (!data.rulesData || data.rulesData.length <= 3) {
+              console.log('📜 Menyalin data rule dari repository ke volume...');
+              data.rulesData = defaultData.rulesData;
+            }
+          }
+        } catch (syncErr) {
+          console.error('Gagal menyinkronkan data default database:', syncErr);
+        }
+      }
       
       // Menambahkan akun Super Admin default jika belum terdaftar
       const adminExists = data.accountsData.some(u => u.email === "admin@stema.com");
