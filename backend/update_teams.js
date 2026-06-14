@@ -1,8 +1,18 @@
+// ==========================================================================
+// STEMA (Smart Team Estimation and Match Analysis) - Script Update Tim
+// File: backend/update_teams.js
+// Deskripsi: Script utilitas untuk mereset dan mempopulasikan playersData secara massal
+//            dengan data skuad baru yang bersih, menginisialisasi stamina ke 100%,
+//            dan memberikan nilai atribut default (80) ke setiap pemain.
+// ==========================================================================
+
 const fs = require('fs');
 
+// Path database JSON lokal
 const file = 'database.json';
 const data = JSON.parse(fs.readFileSync(file, 'utf8'));
 
+// Data pemain baru yang akan di-reset ke dalam database
 const players = [
   { no: 1, pos: 'GK', nama: 'Thibaut Courtois' },
   { no: 2, pos: 'RB', nama: 'Dani Carvajal' },
@@ -30,13 +40,14 @@ const players = [
   { no: 30, pos: 'SS', nama: 'Franco Mastantuono' }
 ];
 
+// Map data pemain baru menjadi format lengkap skema database.json
 data.playersData = players.map(p => ({
   nama: p.nama,
   no: p.no,
   pos: p.pos,
-  stamina: 100,
+  stamina: 100, // Stamina default diatur 100%
   status: 'Aktif',
-  attributes: {
+  attributes: { // Atribut kemampuan dasar disamaratakan ke nilai 80
     speed: 80,
     shooting: 80,
     passing: 80,
@@ -47,5 +58,6 @@ data.playersData = players.map(p => ({
   }
 }));
 
+// Tulis kembali data terbaru ke database.json
 fs.writeFileSync(file, JSON.stringify(data, null, 2));
 console.log('Database updated successfully');

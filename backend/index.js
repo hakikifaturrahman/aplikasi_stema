@@ -1,3 +1,11 @@
+// ==========================================================================
+// STEMA (Smart Team Estimation and Match Analysis) - Backend Server Entrypoint
+// File: backend/index.js
+// Deskripsi: Server Node.js/Express dengan komunikasi real-time menggunakan Socket.io.
+//            Mengelola data pemain, riwayat pertandingan, aturan rule engine, dan
+//            autentikasi pengguna secara real-time menggunakan database JSON lokal.
+// ==========================================================================
+
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -6,23 +14,63 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
-const dbPath = path.join(__dirname, 'database.json');
+// Lokasi penyimpanan file database JSON lokal (dinamis via DATABASE_PATH untuk hosting/persistent volume)
+const dbPath = process.env.DATABASE_PATH || path.join(__dirname, 'database.json');
 
+// Memastikan folder penyimpanan file database sudah terbentuk (terutama jika menggunakan volume eksternal)
+const dbDir = path.dirname(dbPath);
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+
+
+// ==========================================================================
 // --- SISTEM DATABASE LOKAL PERMANEN (JSON FILE) ---
-// Alternatif handal & bebas error dari SQLite tanpa instalasi tambahan
+// Alternatif handal & bebas error dari SQLite tanpa instalasi tambahan.
+// Membaca data dari database.json dan melakukan inisialisasi jika file tidak ada.
+// ==========================================================================
 function loadDB() {
   try {
     if (fs.existsSync(dbPath)) {
       console.log('📦 Database ditemukan! Memuat data asli...');
       const raw = fs.readFileSync(dbPath, 'utf8');
-      return JSON.parse(raw);
+      const data = JSON.parse(raw);
+
+      // Memastikan struktur data accountsData ada
+      if (!data.accountsData) data.accountsData = [];
+      
+      // Menambahkan akun Super Admin default jika belum terdaftar
+      const adminExists = data.accountsData.some(u => u.email === "admin@stema.com");
+      if (!adminExists) {
+        data.accountsData.push({
+          nama: "Super Admin",
+          email: "admin@stema.com",
+          password: "admin123",
+          role: "Super Administrator",
+          foto: null
+        });
+      }
+
+      // Memaksa override details profil admin jika masih menggunakan placeholder lama
+      if (!data.userData || data.userData.email === "ancok@12.com" || data.userData.email === "arbeloa@realfootball.com") {
+        data.userData = {
+          nama: "Super Admin",
+          email: "admin@stema.com",
+          role: "Super Administrator",
+          foto: null
+        };
+      }
+
+      return data;
     }
   } catch (err) {
     console.error('Error saat Load DB:', err);
   }
   
+  // Jika database tidak ditemukan, buat data awal (initial data)
   console.log('📦 Membuat Database Baru (Initial Data)...');
   return {
+    // Roster Pemain Awal (Real Madrid)
     playersData: [
       { nama: 'Kylian Mbappe', no: 9, pos: 'FW', stamina: 78, status: 'Main' },
       { nama: 'Jude Bellingham', no: 8, pos: 'MF', stamina: 35, status: 'Main' },
@@ -33,7 +81,18 @@ function loadDB() {
       { nama: 'Thibaut Courtois', no: 1, pos: 'GK', stamina: 0, status: 'Cedera' },
       { nama: 'Eder Militao', no: 3, pos: 'DF', stamina: 0, status: 'Cedera' },
     ],
+    // Akun Pengguna Awal
+    accountsData: [
+      {
+        nama: "Super Admin",
+        email: "admin@stema.com",
+        password: "admin123",
+        role: "Super Administrator",
+        foto: null
+      }
+    ],
     riwayatMatches: [],
+    // Template Aturan Rule Engine Default
     rulesData: [
       {
         id: 'R1',
@@ -64,39 +123,41 @@ function loadDB() {
       }
     ],
     userData: {
-      nama: 'Alvaro Arbeloa',
-      email: 'arbeloa@realfootball.com',
-      telp: '+62 812 3456 7890',
-      role: 'Pelatih'
+      nama: 'Super Admin',
+      email: 'admin@stema.com',
+      role: 'Super Administrator',
+      foto: null
     }
   };
 }
 
+// Menyimpan data memori ke file database.json
 function saveDB() {
   try {
-    fs.writeFileSync(dbPath, JSON.stringify({ playersData, riwayatMatches, rulesData, userData }, null, 2));
+    fs.writeFileSync(dbPath, JSON.stringify({ playersData, riwayatMatches, rulesData, userData, accountsData }, null, 2));
   } catch (err) {
     console.error('Error gagal menyimpan DB:', err);
   }
 }
-// ----------------------------------------------------
+// --------------------------------------------------------------------------
 
+// Inisialisasi aplikasi Express dan Server HTTP
 const app = express();
 const server = http.createServer(app);
 
-// Setup middleware
+// Pengaturan Middleware Express
 app.use(cors());
 app.use(express.json());
 
-// Setup Socket.IO for Real-Time Communication
+// Setup Socket.IO Server untuk Komunikasi Dua Arah Real-Time
 const io = new Server(server, {
   cors: {
-    origin: "*", // Mengizinkan akses dari aplikasi Flutter
+    origin: "*", // Mengizinkan akses dari aplikasi mobile Flutter dan Next.js Web Admin
     methods: ["GET", "POST"]
   }
 });
 
-// Menyimpan state dari pertandingan 
+// State real-time dari pertandingan berjalan (Match Status)
 let liveData = {
   skor1: 0,
   skor2: 0,
@@ -108,12 +169,13 @@ let liveData = {
   penalti2: 0
 };
 
-// Memuat Data Permanen dari Database
+// Memuat Data Permanen dari Database ke Variabel Memori Server
 let initialDB = loadDB();
 let playersData = initialDB.playersData;
 let riwayatMatches = initialDB.riwayatMatches;
+let accountsData = initialDB.accountsData || [];
 
-// Init base attributes if missing
+// Inisialisasi atribut kemampuan default (speed, shooting, dll.) jika tidak terdefinisi
 playersData = playersData.map(p => {
   if (!p.attributes) {
      if (p.pos === 'FW') p.attributes = { speed: 85, shooting: 88, passing: 75, defensive: 30, vision: 80, stamina: 75, dribbling: 90 };
@@ -124,11 +186,12 @@ playersData = playersData.map(p => {
   return p;
 });
 
-// Fallback array jika db.json lama tidak memiliki rulesData:
+// Fallback array jika rulesData belum ada di file database lama
 let rulesData = initialDB.rulesData || [
   { id: 'R1', nama: 'Rekomendasi Substitusi', tipe: 'Fatigue', if: 'Stamina < 40 AND Menit > 60', then: 'Ganti', aktif: true, triggered: '-' }
 ];
 
+// Fallback profil pengguna aktif jika tidak ada
 let userData = initialDB.userData || {
   nama: 'Alvaro Arbeloa',
   email: 'arbeloa@realfootball.com',
@@ -136,25 +199,89 @@ let userData = initialDB.userData || {
   role: 'Pelatih'
 };
 
-saveDB(); // save back so DB gets updated with attributes & new keys
+// Simpan data kembali untuk sinkronisasi format database
+saveDB();
 
+// ==========================================================================
+// --- PENANGANAN SOCKET.IO CONNECTION ---
+// Mengelola seluruh event real-time dari aplikasi Mobile dan Web Admin
+// ==========================================================================
 io.on('connection', (socket) => {
   console.log(`[+] User connected: ${socket.id}`);
 
-  // 1. KETIKA ADA USER BARU: Berikan Skor & Stamina Yang Paling Baru dari Server
+  // Kirim data teraktual saat klien baru berhasil terhubung (initial sync)
   socket.emit('live_match_sync', liveData);
   socket.emit('stamina_sync', playersData);
   socket.emit('riwayat_sync', riwayatMatches);
   socket.emit('rules_sync', rulesData);
   socket.emit('user_sync', userData);
 
-  // 2. MENDENGAR DARI FLUTTER: Jika ada gol 
+  // --- LOGIKA EVENT AUTENTIKASI ---
+  
+  // Menerima data pendaftaran akun baru
+  socket.on('register', (data) => {
+    const { nama, email, password, role } = data;
+    if (!nama || !email || !password || !role) {
+      socket.emit('register_response', { success: false, message: 'Semua kolom wajib diisi!' });
+      return;
+    }
+    const isExist = accountsData.find(u => u.email === email);
+    if (isExist) {
+      socket.emit('register_response', { success: false, message: 'Email sudah terdaftar!' });
+      return;
+    }
+    accountsData.push({ nama, email, password, role });
+    saveDB();
+    socket.emit('register_response', { success: true, message: 'Registrasi berhasil! Silakan Login.' });
+  });
+
+  // Memvalidasi data login pengguna
+  socket.on('login', (data) => {
+    const { email, password } = data;
+    if (!email || !password) {
+      socket.emit('login_response', { success: false, message: 'Email dan password wajib diisi!' });
+      return;
+    }
+    const user = accountsData.find(u => u.email === email && u.password === password);
+    if (!user) {
+      socket.emit('login_response', { success: false, message: 'Email atau password salah!' });
+      return;
+    }
+    // Perbarui profil pengguna aktif di server
+    userData.nama = user.nama;
+    userData.email = user.email;
+    userData.role = user.role || 'Pelatih Utama';
+    userData.foto = user.foto || null;
+    saveDB();
+    // Beritahu semua klien bahwa user aktif berubah
+    io.emit('user_sync', userData);
+    socket.emit('login_response', { success: true, message: 'Login berhasil!', user: { nama: user.nama, email: user.email, role: user.role } });
+  });
+
+  // Mengubah password pengguna
+  socket.on('change_password', (data) => {
+    const { email, oldPassword, newPassword } = data;
+    const userIndex = accountsData.findIndex(u => u.email === email && u.password === oldPassword);
+    
+    if (userIndex === -1) {
+      socket.emit('password_response', { success: false, message: 'Password lama salah atau akun tidak ditemukan!' });
+      return;
+    }
+
+    accountsData[userIndex].password = newPassword;
+    saveDB();
+    socket.emit('password_response', { success: true, message: 'Password berhasil diubah!' });
+  });
+
+  // --- LOGIKA EVENT PERTANDINGAN REAL-TIME ---
+
+  // Menerima update skor, menit, dan fase pertandingan dari tim kontrol (klien)
   socket.on('update_match', (data) => {
     liveData = { ...liveData, ...data };
     io.emit('live_match_sync', liveData); 
   });
 
-  // 3. MENDENGAR DARI FLUTTER: Jika sebuah layar baru dibuka dan meminta data paling segar saat itu juga
+  // Mengirim ulang data teraktual ke klien secara langsung (manual refresh)
   socket.on('request_sync', () => {
     socket.emit('live_match_sync', liveData);
     socket.emit('stamina_sync', playersData);
@@ -163,38 +290,83 @@ io.on('connection', (socket) => {
     socket.emit('user_sync', userData);
   });
 
-  // 3b. MENDENGAR DARI FLUTTER: Update Profil
+  // Menerima permintaan sinkronisasi profil admin dari panel web
+  socket.on('request_admin_sync', () => {
+    const adminAccount = accountsData.find(u => u.email === "admin@stema.com") || {
+      nama: "Super Admin",
+      email: "admin@stema.com",
+      role: "Super Administrator",
+      foto: null
+    };
+    socket.emit('admin_sync', adminAccount);
+  });
+
+  // Memperbarui data informasi profil pengguna (termasuk foto Base64)
   socket.on('update_user', (data) => {
+    // Pembaruan khusus akun super admin
+    if (data.email === "admin@stema.com") {
+      const adminIndex = accountsData.findIndex(u => u.email === data.email);
+      if (adminIndex !== -1) {
+        accountsData[adminIndex].nama = data.nama || accountsData[adminIndex].nama;
+        if (data.foto !== undefined) {
+           accountsData[adminIndex].foto = data.foto;
+        }
+        saveDB();
+        io.emit('admin_sync', accountsData[adminIndex]);
+      }
+      return;
+    }
+
     userData = { ...userData, ...data };
+    
+    // Perbarui atau daftarkan akun baru di database lokal
+    if (data.email) {
+      const userIndex = accountsData.findIndex(u => u.email === data.email);
+      if (userIndex !== -1) {
+        accountsData[userIndex].nama = data.nama || accountsData[userIndex].nama;
+        accountsData[userIndex].role = data.role || accountsData[userIndex].role;
+        if (data.foto !== undefined) {
+           accountsData[userIndex].foto = data.foto;
+        }
+      } else {
+        accountsData.push({
+          nama: userData.nama,
+          email: userData.email,
+          password: "admin123", // Password bawaan
+          role: userData.role || 'Pelatih Utama',
+          foto: userData.foto || null
+        });
+      }
+    }
+    
     saveDB();
     io.emit('user_sync', userData);
   });
 
-  // 4. MENDENGAR DARI FLUTTER: Match Selesai / Peluit Panjang
+  // Mengakhiri pertandingan, menghitung performa rata-rata, dan menyusun laporan riwayat
   socket.on('finish_match', (data = {}) => {
     console.log('📌 MATCH SELESAI! MENYIMPAN RIWAYAT...', data);
     
-    // Prediksi Menang/Kalah/Seri
+    // Tentukan hasil akhir (W = Menang, D = Seri, L = Kalah)
     let finalHasil = liveData.skor1 > liveData.skor2 ? 'W' : (liveData.skor1 === liveData.skor2 ? 'D' : 'L');
     let finalSkorStr = `${liveData.skor1} - ${liveData.skor2}`;
     
-    // Jika Extra Time selesai dan adu penalti terlibat
+    // Jika fase saat ini adalah adu penalti
     if (liveData.penalti1 > 0 || liveData.penalti2 > 0 || liveData.fase === 'Penalti') {
        finalSkorStr += ` (${liveData.penalti1} - ${liveData.penalti2} PEN)`;
        finalHasil = liveData.penalti1 > liveData.penalti2 ? 'W' : (liveData.penalti1 === liveData.penalti2 ? 'D' : 'L');
-    }
+     }
 
     const totalYellow = playersData.filter(p => p.kartu === 'Kuning').length;
     const totalRed = playersData.filter(p => p.kartu === 'Merah').length;
     
-    // Format menjadi Laporan Riwayat (Sesuai struktur RiwayatMatchScreen Flutter)
-    // Memasukkan nama tim secara dinamis dari frontend (bisa beda tiap match!)
-    
+    // Atur data statistik default/acak jika input kosong
     const possessionStr = data.possession && data.possession.trim() !== '' ? `${data.possession}%` : `${Math.floor(Math.random() * 30 + 35)}%`;
     const passesStr = data.passes && data.passes.trim() !== '' ? data.passes : `${Math.floor(Math.random() * 300 + 200)}`;
     const totalShots = data.shots != null && data.shots > 0 ? data.shots.toString() : Math.floor(Math.random() * 15 + 5).toString();
     const totalShotsTarget = data.shotsOnTarget != null && data.shotsOnTarget > 0 ? data.shotsOnTarget.toString() : Math.floor(Math.random() * 8 + 2).toString();
 
+    // Menyusun objek laporan riwayat pertandingan
     const reportData = {
       tanggal: new Date().toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
       timKandang: data.timKandang || 'Real Madrid',
@@ -216,7 +388,7 @@ io.on('connection', (socket) => {
       performaPemain: playersData.filter(p => p.status === 'Main' || p.status === 'Pemanasan' || p.status === 'Cadangan' || p.status === 'Kartu Kuning' || p.status === 'Kartu Merah').map(p => ({
         nama: p.nama,
         pos: p.pos,
-        rating: parseFloat((Math.random() * 3 + 6.0).toFixed(1)), // Acak dari 6.0 ke 9.0
+        rating: parseFloat((Math.random() * 3 + 6.0).toFixed(1)), // Acak rating pemain 6.0 - 9.0
         sprint: Math.floor(Math.random() * 40 + 5),
         assist: p.assist || 0,
         gol: p.gol || 0,
@@ -225,13 +397,11 @@ io.on('connection', (socket) => {
       }))
     };
 
-    // Taruh laporan paling atas
+    // Sisipkan laporan ke tumpukan riwayat paling atas
     riwayatMatches.unshift(reportData);
-    
-    // Sebar luaskan riwayat terbaru ke seluruh aplikasi yang sedang buka Menu Riwayat
     io.emit('riwayat_sync', riwayatMatches);
 
-    // KEMUDIAN LAKUKAN GLOBAL RESET: Atur ulang skor dan bersihkan stamina ke 100% untuk match berikutnya
+    // KEMUDIAN LAKUKAN GLOBAL RESET STAMINA & STATISTIK PEMAIN
     liveData = {
       skor1: 0,
       skor2: 0,
@@ -243,25 +413,26 @@ io.on('connection', (socket) => {
       penalti2: 0
     };
     playersData = playersData.map(p => {
-      if (p.status === 'Main' || p.status === 'Pemanasan' || p.status === 'Kartu Kuning') p.stamina = Math.floor(Math.random() * 15 + 85); // Acak 85-100%
+      if (p.status === 'Main' || p.status === 'Pemanasan' || p.status === 'Kartu Kuning') p.stamina = Math.floor(Math.random() * 15 + 85); // Stamina reset acak 85-100%
       if (p.status === 'Cadangan' || p.status === 'Kartu Merah') p.stamina = 100;
-      if (p.status === 'Kartu Merah') p.status = 'Cadangan'; // kembalikan merah jadi cadangan untuk next match
-      if (p.status === 'Kartu Kuning') p.status = 'Main'; // kembalikan kuning jadi main untuk next match
-      p.kartu = '-'; // Bersihkan riwayat kartu
-      p.gol = 0; // Bersihkan gol
-      p.goalEvents = []; // Bersihkan riwayat menit gol
+      if (p.status === 'Kartu Merah') p.status = 'Cadangan'; 
+      if (p.status === 'Kartu Kuning') p.status = 'Main'; 
+      p.kartu = '-'; 
+      p.gol = 0; 
+      p.goalEvents = []; 
       p.assist = 0;
       return p;
     });
 
-    saveDB(); // Simpan riwayat & stamina terbaru murni ke Storage Abadi!
+    saveDB();
     
+    // Sinkronisasi data reset ke semua klien
     io.emit('live_match_sync', liveData);
     io.emit('stamina_sync', playersData);
     console.log('📌 GLOBAL RESET SELESAI & DB DISIMPAN');
   });
 
-  // 4b. MENDENGAR DARI FLUTTER: Menyimpan Pertandingan Manual (Offline/History Entry)
+  // Menyimpan data pertandingan yang dimasukkan secara manual (offline history)
   socket.on('save_manual_match', (data) => {
     console.log('📌 MENYIMPAN MATCH MANUAL:', data.namaPertandingan);
     
@@ -280,14 +451,12 @@ io.on('connection', (socket) => {
       rekomendasi: [
          `✅ Pertandingan didaftarkan secara manual: ${data.namaPertandingan}`
       ],
-      // Gunakan starting XI yang dilempar, atau kosongi
       performaPemain: (data.startingXI || []).map(namaPemain => {
-         // Coba cari data asli pemain untuk POS
          const found = playersData.find(p => p.nama === namaPemain);
          return {
            nama: namaPemain,
            pos: found ? found.pos : 'N/A',
-           rating: parseFloat((Math.random() * 2 + 6.5).toFixed(1)), // Mock rating
+           rating: parseFloat((Math.random() * 2 + 6.5).toFixed(1)),
            sprint: Math.floor(Math.random() * 30 + 10),
            assist: 0,
            gol: 0
@@ -300,11 +469,12 @@ io.on('connection', (socket) => {
     io.emit('riwayat_sync', riwayatMatches);
   });
 
-  // 5. MANAJEMEN ROSTER GLOBAL
+  // --- LOGIKA EVENT PENGELOLAAN PEMAIN ---
+
+  // Menambahkan pemain baru ke database roster
   socket.on('add_player', (newPlayer) => {
     console.log('📌 MENAMBAHKAN PEMAIN BARU:', newPlayer.nama);
     
-    // Auto generate stats based on pos if not provided from Flutter
     const pos = newPlayer.pos || 'CM';
     let attr = newPlayer.attributes;
     if (!attr) {
@@ -318,7 +488,6 @@ io.on('connection', (socket) => {
     if (newPlayer.status === 'Cedera') initialStamina = 0;
     else if (newPlayer.status === 'Main' || newPlayer.status === 'Cadangan') initialStamina = 100;
 
-    // Tambahkan ke database lokal server
     playersData.push({
       nama: newPlayer.nama,
       no: newPlayer.no,
@@ -327,12 +496,11 @@ io.on('connection', (socket) => {
       status: newPlayer.status || 'Main',
       attributes: attr,
     });
-    saveDB(); // Simpan Data Roster langsung ke Storage Permanen!
-    
-    // Siarkan roster baru
+    saveDB();
     io.emit('stamina_sync', playersData);
   });
 
+  // Menghapus pemain berdasarkan nama
   socket.on('delete_player', (playerName) => {
     console.log('📌 MENGHAPUS PEMAIN:', playerName);
     playersData = playersData.filter(p => p.nama !== playerName);
@@ -340,24 +508,24 @@ io.on('connection', (socket) => {
     io.emit('stamina_sync', playersData);
   });
 
+  // Mengedit data pemain, mengotomatisasi status kartu, dan menyesuaikan stamina berdasarkan perubahan status
   socket.on('edit_player', (updatedPlayer) => {
     console.log('📌 MENGEDIT PEMAIN:', updatedPlayer.originalName);
     const idx = playersData.findIndex(p => p.nama === updatedPlayer.originalName);
     if (idx !== -1) {
       const oldStatus = playersData[idx].status;
       
-      // Update data kartu jika status yang dipilih adalah kartu
+      // Deteksi status kartu
       if (updatedPlayer.status === 'Kartu Kuning') {
          updatedPlayer.kartu = 'Kuning';
          updatedPlayer.status = 'Main';
       } else if (updatedPlayer.status === 'Kartu Merah') {
          updatedPlayer.kartu = 'Merah';
       } else {
-         // Jika status diubah ke yang lain, kartu otomatis dihapus
          updatedPlayer.kartu = '-';
       }
       
-      // Cek apakah terjadi perubahan jumlah gol untuk update skor otomatis
+      // Deteksi penambahan/pengurangan gol pemain untuk mengupdate skor global real-time
       const oldGol = playersData[idx].gol || 0;
       const newGol = updatedPlayer.gol || 0;
       
@@ -383,10 +551,9 @@ io.on('connection', (socket) => {
 
       playersData[idx] = { ...playersData[idx], ...updatedPlayer };
       
-      // Auto Stamina based on status changes (Main/Cadangan -> 100, Cedera/Kartu Merah -> 0)
+      // Sesuaikan stamina otomatis berdasarkan transisi status baru
       if (oldStatus !== playersData[idx].status) {
          if (playersData[idx].status === 'Main' || playersData[idx].status === 'Kartu Kuning') {
-            // Jika dari Pemanasan ke Main, JANGAN reset stamina. Biarkan mengikuti stamina terakhir saat pemanasan.
             if (oldStatus !== 'Pemanasan') {
                playersData[idx].stamina = 100;
             }
@@ -395,7 +562,6 @@ io.on('connection', (socket) => {
          } else if (playersData[idx].status.startsWith('Cedera') || playersData[idx].status === 'Kartu Merah') {
             playersData[idx].stamina = 0;
          }
-         // Jika status berubah menjadi Pemanasan, biarkan stamina sesuai yang didapat (biasanya 100 dari Cadangan)
       }
 
       delete playersData[idx].originalName;
@@ -404,14 +570,14 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Mencatat log pergantian pemain ke terminal server
   socket.on('log_substitution', (data) => {
     console.log('📌 SUBSTITUSI TERJADI:', data);
-    // Kita bisa menyisipkan log ini ke dalam liveData atau sebuah log array tersendiri
-    // untuk kemudian dimasukkan ke laporan riwayat.
-    // Sementara kita hanya console.log agar tercatat di log server.
   });
 
-  // 6. MANAJEMEN RULE ENGINE (CRUD)
+  // --- LOGIKA EVENT KONFIGURASI RULE ENGINE (CRUD) ---
+
+  // Menambahkan aturan (rule) baru
   socket.on('add_rule', (newRule) => {
     console.log('📌 MENAMBAHKAN RULE BARU:', newRule.nama);
     const ruleObj = {
@@ -428,6 +594,7 @@ io.on('connection', (socket) => {
     io.emit('rules_sync', rulesData);
   });
 
+  // Mengubah status aktif/nonaktif aturan
   socket.on('toggle_rule', (data) => {
     const idx = rulesData.findIndex(r => r.id === data.id);
     if (idx !== -1) {
@@ -437,35 +604,34 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Menghapus aturan berdasarkan ID
   socket.on('delete_rule', (id) => {
     rulesData = rulesData.filter(r => r.id !== id);
     saveDB();
     io.emit('rules_sync', rulesData);
   });
 
-  // Simulasi Rule Evaluator (Dipanggil dari frontend untuk tes manual)
+  // Simulasi mengevaluasi kondisi aturan dan mengirimkan respon balik (simulation engine)
   socket.on('simulate_rule', (data) => {
     console.log('🧪 SIMULASI RULE MASUK:', data);
     let firedRules = [];
     const p_stamina = parseInt(data.stamina) || 100;
     const p_menit = parseInt(data.menit) || 0;
-    const p_status = data.status || ''; // 'Menang', 'Seri', 'Kalah'
+    const p_status = data.status || '';
 
     rulesData.forEach(rule => {
       if (!rule.aktif) return;
-      // Parsing sederhana IF condition (Mendukung kondisi dari template)
       let isTriggered = false;
       const cond = rule.if.toUpperCase();
       
-      // FATIGUE
+      // Aturan Kelompok: Fatigue (Kelelahan)
       if (cond.includes('STAMINA < 40 AND MENIT > 60')) {
         if (p_stamina < 40 && p_menit > 60) isTriggered = true;
       } else if (cond.includes('STAMINA')) {
-        // Fallback untuk rule buatan
         if (p_stamina < 50) isTriggered = true;
       }
       
-      // TACTICAL
+      // Aturan Kelompok: Tactical (Taktis)
       if (cond.includes('MENIT < 30 AND STATUS = MENANG')) {
         if (p_menit < 30 && p_status.toUpperCase() === 'MENANG') isTriggered = true;
       } else if (cond.includes('MENIT > 80 AND STATUS = SERI')) {
@@ -474,12 +640,12 @@ io.on('connection', (socket) => {
 
       if (isTriggered) {
         firedRules.push(`[${rule.nama}] -> ${rule.then}`);
-        rule.triggered = 'Baru saja'; // Update UI
+        rule.triggered = 'Baru saja'; 
       }
     });
 
     saveDB();
-    io.emit('rules_sync', rulesData); // Update triggered status ke semua
+    io.emit('rules_sync', rulesData); 
 
     if (firedRules.length > 0) {
       socket.emit('simulation_result', { success: true, message: '🔥 TRIGGER TERPENUHI:\n' + firedRules.join('\n') });
@@ -488,14 +654,13 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 7. MENDENGAR DARI ASISTEN PELATIH: Laporan Statistik Pinggir Lapangan
+  // Menerima data statistik latihan/pinggir lapangan dari asisten pelatih dan mengevaluasi rule secara live
   socket.on('assistant_report', (data) => {
     console.log('Laporan Asisten masuk:', data);
     let ruleFired = false;
     let ruleMessage = "";
 
-    // RULE ENGINE SEDERHANA DI SERVER SECARA LIVE
-    // Meniru rule "Performance Alert" dari rule_engine_screen.dart
+    // Cek kecocokan kondisi aturan taktis & performa
     if (data.rating < 5 && data.kesalahan > 3) {
       ruleFired = true;
       ruleMessage = `⚠️ KEPUTUSAN RULE ENGINE (PERFORMA BURUK):\n${data.pemain} bermain terburuk (Rating ${data.rating}, ${data.kesalahan}x Blunder). REKOMENDASI: PERTIMBANGKAN PENGGANTIAN POSISI SEGERA!`;
@@ -508,13 +673,14 @@ io.on('connection', (socket) => {
     }
 
     if (ruleFired) {
-      // Broadcast peringatan keras ini ke semua tablet/aplikasi Pelatih Kepala!
+      // Broadcast peringatan keras ini ke semua tablet/aplikasi Pelatih Kepala
       io.emit('rule_alert', { message: ruleMessage, level: 'CRITICAL', time: new Date().toLocaleTimeString() });
     } else {
       io.emit('rule_alert', { message: `✅ Info Laporan: Data statistik ${data.pemain} baru saja dimasukkan (Rating: ${data.rating}).`, level: 'INFO', time: new Date().toLocaleTimeString() });
     }
   });
 
+  // Memicu mulainya jalannya timer & status pertandingan live
   socket.on('start_match', () => {
     liveData.isLive = true;
     if (liveData.fase === 'Persiapan') {
@@ -529,30 +695,25 @@ io.on('connection', (socket) => {
   });
 });
 
-// 3. LOGIKA SIMULASI DI SERVER (STAMINA LIGA 1 BRI)
-// Di aplikasi Anda, 1 menit pertandingan = 5 detik dunia nyata (dari timer dashboard).
-// Pemain Liga 1 BRI rata-rata staminanya drop lebih drastis mulai menit 60-70.
-// Kita kurangi 1-2% setiap 10 detik dunia nyata (setara setiap 2 menit pertandingan).
+// ==========================================================================
+// --- SIMULASI PENGURANGAN STAMINA BERKALA (LIGA 1 INDONESIA TYPE) ---
+// Pengurangan stamina otomatis berjalan setiap 10 detik dunia nyata jika status isLive = true.
+// ==========================================================================
 setInterval(() => {
   if (liveData.isLive && liveData.fase !== 'Penalti') {
     let changed = false;
     playersData = playersData.map(player => {
-      // Hanya kurangi stamina yang Main atau Pemanasan dan belum terkuras habis
+      // Kurangi stamina pemain yang sedang aktif bermain (Main, Pemanasan, Kartu Kuning)
       if ((player.status === 'Main' || player.status === 'Pemanasan' || player.status === 'Kartu Kuning') && player.stamina > 0) {
-        // Drain: Berkurang secara acak antara 1% sampai 2% untuk Main
-        // Drain logic: Di sini interval=10s didunia nyata (2 menit game).
-        // Main: turun 1% per 2 menit game -> 1% per interval ini.
-        // Pemanasan: turun 1% per 5 menit game. 2 menit/5 menit = 0.4 per interval.
         let drain = 0;
         if (player.status === 'Main' || player.status === 'Kartu Kuning') {
-            drain = 1;
+            drain = 1; // Kurangi 1% stamina per interval
         } else if (player.status === 'Pemanasan') {
-            // Gunakan properti sementara staminaDecimalTracker untuk akumulasi pengurangan 0.4
+            // Pengurangan lebih lambat untuk pemain pemanasan (~1% per 2.5 interval)
             player.staminaDecimalTracker = (player.staminaDecimalTracker || 0) + 0.4;
             if (player.staminaDecimalTracker >= 1) {
                drain = 1;
                player.staminaDecimalTracker -= 1;
-               // Ini menghasilkan ~1 poin per 2.5 interval (25 detik dunia nyata / 5 menit game)
             }
         }
         
@@ -565,18 +726,52 @@ setInterval(() => {
     });
 
     if (changed) {
-      saveDB(); // Catat pengurangan stamina ke DB
-      // Sebarkan stamina terbaru ke setiap device
-      io.emit('stamina_sync', playersData);
+      saveDB(); // Catat pengurangan stamina ke file DB
+      io.emit('stamina_sync', playersData); // Sebarkan stamina terupdate ke klien
     }
   }
-}, 10000); // Interval diperlambat menjadi 10 detik sekali
+}, 10000); // Berjalan setiap 10 detik sekali
 
-// Basic API route untuk mengecek apakah server jalan
+// ==========================================================================
+// --- REST API ENDPOINTS ---
+// Untuk keperluan pengecekan status server, login admin, dan ekspor database
+// ==========================================================================
+
+// Pengecekan status backend
 app.get('/api/status', (req, res) => {
   res.json({ message: "Backend is running!", status: "Real-time Ready", liveData, playersData });
 });
 
+// Autentikasi administrator web
+app.post('/api/admin/login', (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ success: false, message: 'Email dan password wajib diisi!' });
+  }
+  const adminUser = accountsData.find(u => u.email === email && u.password === password && u.email === "admin@stema.com");
+  if (!adminUser) {
+    return res.status(401).json({ success: false, message: 'Email atau password admin salah!' });
+  }
+  return res.json({ success: true, message: 'Login berhasil!', user: { nama: adminUser.nama, email: adminUser.email, role: adminUser.role } });
+});
+
+// Mengunduh salinan database.json secara penuh
+app.get('/api/database/export', (req, res) => {
+  try {
+    if (fs.existsSync(dbPath)) {
+      const raw = fs.readFileSync(dbPath, 'utf8');
+      res.setHeader('Content-Disposition', 'attachment; filename=database.json');
+      res.setHeader('Content-Type', 'application/json');
+      return res.send(raw);
+    } else {
+      return res.status(404).json({ success: false, message: 'Database file not found' });
+    }
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Deteksi alamat IP Lokal PC untuk koneksi Wi-Fi eksternal dari HP
 const os = require('os');
 const networkInterfaces = os.networkInterfaces();
 let localIp = 'localhost';
@@ -584,11 +779,11 @@ for (const interfaceName in networkInterfaces) {
   for (const info of networkInterfaces[interfaceName]) {
     if (info.family === 'IPv4' && !info.internal) {
       localIp = info.address;
-      // You can break early if you want, but this gets the last non-internal IPv4
     }
   }
 }
 
+// Menjalankan server pada port yang ditentukan
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server berjalan di PC lokal: http://localhost:${PORT}`);

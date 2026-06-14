@@ -2,9 +2,9 @@ import 'dart:io';
 
 void main() {
   final files = [
-    'd:/apk_pui/lib/screens/riwayat_match_screen.dart',
-    'd:/apk_pui/lib/screens/rule_engine_screen.dart',
-    'd:/apk_pui/lib/screens/laporan_screen.dart',
+    'd:/apk_pui/frontend/lib/screens/riwayat_match_screen.dart',
+    'd:/apk_pui/frontend/lib/screens/rule_engine_screen.dart',
+    'd:/apk_pui/frontend/lib/screens/laporan_screen.dart',
   ];
 
   for (var path in files) {
