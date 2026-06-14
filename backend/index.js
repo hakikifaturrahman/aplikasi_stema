@@ -31,6 +31,14 @@ if (!fs.existsSync(dbDir)) {
 // ==========================================================================
 function loadDB() {
   try {
+    const defaultDbPath = path.join(__dirname, 'database.json');
+    
+    // Jika file volume eksternal belum terbentuk, tapi ada database bawaan repository, salin terlebih dahulu
+    if (!fs.existsSync(dbPath) && dbPath !== defaultDbPath && fs.existsSync(defaultDbPath)) {
+      console.log('📦 Menyalin database.json default dari repository ke volume...');
+      fs.copyFileSync(defaultDbPath, dbPath);
+    }
+
     if (fs.existsSync(dbPath)) {
       console.log('📦 Database ditemukan! Memuat data asli...');
       const raw = fs.readFileSync(dbPath, 'utf8');
