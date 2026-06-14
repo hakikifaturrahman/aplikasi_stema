@@ -280,15 +280,18 @@ io.on('connection', (socket) => {
   // Memvalidasi data login pengguna
   socket.on('login', (data) => {
     const { email, password } = data;
+    console.log(`👤 Menerima permintaan login untuk email: "${email}"`);
     if (!email || !password) {
       socket.emit('login_response', { success: false, message: 'Email dan password wajib diisi!' });
       return;
     }
     const user = accountsData.find(u => u.email === email && u.password === password);
     if (!user) {
+      console.log(`❌ Login gagal untuk email: "${email}". Akun tidak ditemukan atau password salah.`);
       socket.emit('login_response', { success: false, message: 'Email atau password salah!' });
       return;
     }
+    console.log(`✅ Login berhasil untuk email: "${email}" (${user.role})`);
     // Perbarui profil pengguna aktif di server
     userData.nama = user.nama;
     userData.email = user.email;
